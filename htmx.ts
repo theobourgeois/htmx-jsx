@@ -70,6 +70,8 @@ export interface HTMXRouterConfig {
   port?: number;
   /** host to listen on (default "localhost") */
   host?: string;
+  /** enable debug mode for detailed logging */
+  debug?: boolean;
 }
 
 export type HTMXRouteOptions<T> = {
@@ -94,27 +96,8 @@ export type HTMXRouteOptions<T> = {
   routeOptions?: FastifyHttpOptions<RawServerDefault>;
 } & OnHandlers;
 
-export function createHTMXRouter(config: HTMXRouterConfig = {}) {
-  const prefix = config.prefix ?? "/api";
-  const app = config.app ?? fastify(config.fastifyOptions);
-  if (config.useFormbody ?? true) {
-    app.register(formbody);
-  }
-
-  const routeRegistry = new Map<string, RouteHandler<any>>();
-
-  function hashFn(fn: (...args: any[]) => any) {
-    return createHash("sha1")
-      .update(fn.toString())
-      .digest("hex")
-      .slice(0, 10);
-  }
-
-  if (config.entryPoint) {
-    const mount = config.rootPath ?? "/";
-    app.get(mount, async (req, res) => {
-      const content = renderToStaticMarkup(config.entryPoint!);
-      const html = `<!DOCTYPE html>
+const baseLayout = (content: string) => {
+  const html = `<!DOCTYPE html>
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
@@ -126,6 +109,46 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
         <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     </body>
 </html>`;
+  return html;
+};
+
+function hashFn(fn: (...args: any[]) => any) {
+  return createHash("sha1")
+    .update(fn.toString())
+    .digest("hex")
+    .slice(0, 10);
+}
+
+export function createHTMXRouter(config: HTMXRouterConfig = {}) {
+  const prefix = config.prefix ?? "/api";
+  const app = config.app ?? fastify(config.fastifyOptions);
+  const debug = config.debug ?? false;
+
+  const log = (...args: any[]) => {
+    if (debug) {
+      console.log("[HTMX]", ...args);
+    }
+  };
+
+  const logError = (...args: any[]) => {
+    console.error("[HTMX]", ...args);
+  };
+
+  log("Initializing router with prefix:", prefix);
+
+  if (config.useFormbody ?? true) {
+    app.register(formbody);
+    log("Registered formbody plugin");
+  }
+
+  const routeRegistry = new Map<string, RouteHandler<any>>();
+
+  if (config.entryPoint) {
+    const mount = config.rootPath ?? "/";
+    log("Setting up entry point at:", mount);
+    app.get(mount, async (_, res) => {
+      const content = renderToStaticMarkup(config.entryPoint);
+      const html = baseLayout(content);
       res.header("Content-Type", "text/html").send(html);
     });
   }
@@ -138,6 +161,13 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
     const path = `${prefix}/${id}`;
 
     if (!routeRegistry.has(path)) {
+      log(`Registering new route: ${method} ${path}`);
+      log(`Route options:`, {
+        target: opts.target ?? "body",
+        swap: opts.swap ?? "innerHTML",
+        vals: opts.vals,
+      });
+
       routeRegistry.set(path, opts.handler);
 
       app.route({
@@ -145,6 +175,9 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
         url: path,
         ...(opts.routeOptions ?? {}),
         handler: async (req, res) => {
+          log(`Handling request: ${method} ${path}`);
+          log("Request body:", req.body);
+
           try {
             const data = {
               ...(opts.vals ?? {}),
@@ -153,63 +186,51 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
 
             const jsx = await opts.handler({ data, req, res });
             const html = renderToStaticMarkup(jsx);
+
+            log("Generated HTML response length:", html.length);
+
             res.header("Content-Type", "text/html").send(html);
           } catch (e) {
-            console.error("HTMX handler error:", e);
+            logError("Handler error:", e);
             res.status(500).send("Server error");
           }
         },
       });
     }
 
-    let hxAttr = "hx-post";
-    switch (method) {
-      case "GET":
-        hxAttr = "hx-get";
-        break;
-      case "POST":
-        hxAttr = "hx-post";
-        break;
-      case "PUT":
-        hxAttr = "hx-put";
-        break;
-      case "DELETE":
-        hxAttr = "hx-delete";
-        break;
-      case "PATCH":
-        hxAttr = "hx-patch";
-        break;
-    }
-
+    const hxAttr = "hx-" + method.toLowerCase();
     const onHandlers = Object.keys(opts).filter((key) =>
       key.startsWith("on")
     );
     const hxOnHandlers = Object.fromEntries(
-      onHandlers.map((key) => {
-        const handler = opts[key as keyof OnHandlers];
-        if (!handler) return [];
+      onHandlers
+        .map((key) => {
+          const handler = opts[key as keyof OnHandlers];
+          if (!handler) return [];
 
-        const handlerString = handler.toString()
-          .replace(/^function\s*\([^)]*\)\s*{/, '')
-          .replace(/^\(?[^)]*\)?\s*=>\s*{/, '')
-          .replace(/}$/, '')
-          .trim();
+          const handlerString = handler
+            .toString()
+            .replace(/^function\s*\([^)]*\)\s*{/, "")
+            .replace(/^\(?[^)]*\)?\s*=>\s*{/, "")
+            .replace(/}$/, "")
+            .trim();
 
-        return [convertToHXAttribute(key as keyof OnHandlers), handlerString];
-      }).filter((entry): entry is [string, string] => entry.length > 0)
+          return [
+            convertToHXAttribute(key as keyof OnHandlers),
+            handlerString,
+          ];
+        })
+        .filter((entry): entry is [string, string] => entry.length > 0)
     );
 
-
-    const attrbs = {
+    const hxAttributes = {
       [hxAttr]: path,
       "hx-target": opts.target ?? "body",
       "hx-swap": opts.swap ?? "innerHTML",
       "hx-vals": JSON.stringify(opts.vals),
       ...hxOnHandlers,
-
     };
-    console.log(attrbs);
-    return attrbs;
+    return hxAttributes;
   };
 
   router.start = async () => {
@@ -217,9 +238,11 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
       const port = config.port ?? 3000;
       const host = config.host ?? "localhost";
       await app.listen({ port, host });
-      console.log(`Server listening on http://${host}:${port}`);
+      console.log(`[HTMX] Server listening on http://${host}:${port}`);
+      log("Debug mode enabled");
+      log("Registered routes:", Array.from(routeRegistry.keys()));
     } catch (err) {
-      console.error("Error starting server:", err);
+      logError("Error starting server:", err);
       process.exit(1);
     }
   };
