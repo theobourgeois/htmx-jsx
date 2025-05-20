@@ -1,5 +1,3 @@
-// htmx.ts
-
 import { createHash } from "crypto";
 import { renderToStaticMarkup } from "react-dom/server";
 import fastify, {
@@ -12,9 +10,6 @@ import fastify, {
 } from "fastify";
 import formbody from "@fastify/formbody";
 
-//
-// ─── TYPES ─────────────────────────────────────────────────────────────────────
-//
 type HandlerArgs<T> = {
   data: T;
   req: FastifyRequest;
@@ -36,7 +31,7 @@ type OnHandlers = Partial<{
   onMouseDown: (event: Event) => void;
   onMouseUp: (event: Event) => void;
 
-  // HTMX events (shortform style, using hx-on:: syntax)
+  // HTMX events
   onBeforeRequest: (event: Event) => void;
   onAfterRequest: (event: Event) => void;
 }>;
@@ -106,10 +101,8 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
     app.register(formbody);
   }
 
-  // keep track so we only register each hashed handler once
   const routeRegistry = new Map<string, RouteHandler<any>>();
 
-  // simple code‐based hash
   function hashFn(fn: (...args: any[]) => any) {
     return createHash("sha1")
       .update(fn.toString())
@@ -147,14 +140,12 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
     if (!routeRegistry.has(path)) {
       routeRegistry.set(path, opts.handler);
 
-      // register with Fastify
       app.route({
         method,
         url: path,
         ...(opts.routeOptions ?? {}),
         handler: async (req, res) => {
           try {
-            // formbody will parse urlencoded + json
             const data = {
               ...(opts.vals ?? {}),
               ...(req.body ?? {}),
@@ -171,7 +162,6 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
       });
     }
 
-    // return all the attributes you'd spread onto a <form> or <a>
     let hxAttr = "hx-post";
     switch (method) {
       case "GET":
@@ -198,13 +188,13 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
       onHandlers.map((key) => {
         const handler = opts[key as keyof OnHandlers];
         if (!handler) return [];
-        // Convert the function to a string that HTMX can evaluate
+
         const handlerString = handler.toString()
           .replace(/^function\s*\([^)]*\)\s*{/, '')
           .replace(/^\(?[^)]*\)?\s*=>\s*{/, '')
           .replace(/}$/, '')
           .trim();
-        // Ensure the function body is complete
+
         return [convertToHXAttribute(key as keyof OnHandlers), handlerString];
       }).filter((entry): entry is [string, string] => entry.length > 0)
     );
@@ -222,7 +212,6 @@ export function createHTMXRouter(config: HTMXRouterConfig = {}) {
     return attrbs;
   };
 
-  // Add start method to the router
   router.start = async () => {
     try {
       const port = config.port ?? 3000;
